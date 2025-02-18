@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import gymnasium as gym
 import ptan
-from gymnasium.wrappers import RecordVideo
-from ptan.experience import ExperienceSourceFirstLast
 import numpy as np
 import typing as tt
-from torch.utils.tensorboard.writer import SummaryWriter
+from tensorboardX import SummaryWriter
+from gymnasium.wrappers import RecordVideo
 
 import torch
 import torch.nn as nn
@@ -31,6 +30,7 @@ class PGN(nn.Module):
         return self.net(x)
 
 
+
 def calc_qvals(rewards: tt.List[float]) -> tt.List[float]:
     res = []
     sum_r = 0.0
@@ -38,43 +38,48 @@ def calc_qvals(rewards: tt.List[float]) -> tt.List[float]:
         sum_r *= GAMMA
         sum_r += r
         res.append(sum_r)
-    return list(reversed(res))
+    res = list(reversed(res))
+    mean_q = np.mean(res)
+    return [q - mean_q for q in res]
 
 
 if __name__ == "__main__":
-    #env = gym.make("CartPole-v1")
+    game="LunarLander-v2"
+    env = RecordVideo(env=gym.make(game, render_mode="rgb_array", continuous=False, gravity=-10.0,
+             enable_wind=True, wind_power=15.0, turbulence_power=1.5), video_folder="./" + game + "-training-reinforce-baseline",
+                      episode_trigger=lambda x: x % 20 == 0 and x > 0)
+    env = RecordVideo(env=gym.make(game, render_mode="rgb_array"), video_folder="./" + game + "-training-reinforce-baseline", episode_trigger=lambda x: x % 20 == 0 and x > 0)
 
-    game = "CartPole-v1"
-    #game = "Acrobot-v1"
-    episodes = 1000
-    env = RecordVideo(env=gym.make(game, render_mode="rgb_array"), video_folder="./"+game+"-training",
-                      episode_trigger=lambda x: x % 20 == 0 and x > 0 or x >= episodes - 10)
-
-    writer = SummaryWriter(comment="-cartpole-reinforce")
+    writer = SummaryWriter(comment="-lunarlandar-reinforce-baseline")
 
     net = PGN(env.observation_space.shape[0], env.action_space.n)
     print(net)
 
-    agent = ptan.agent.PolicyAgent(
-        net, preprocessor=ptan.agent.float32_preprocessor, apply_softmax=True)
-    exp_source = ExperienceSourceFirstLast(env, agent, gamma=GAMMA)
+    agent = ptan.agent.PolicyAgent(net, preprocessor=ptan.agent.float32_preprocessor,
+                                   apply_softmax=True)
+    exp_source = ptan.experience.ExperienceSourceFirstLast(env, agent, gamma=GAMMA)
 
     optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE)
 
     total_rewards = []
+    step_idx = 0
     done_episodes = 0
 
     batch_episodes = 0
     batch_states, batch_actions, batch_qvals = [], [], []
-    cur_rewards = []
+    cur_states, cur_actions, cur_rewards = [], [], []
 
     for step_idx, exp in enumerate(exp_source):
-        batch_states.append(exp.state)
-        batch_actions.append(int(exp.action))
+        cur_states.append(exp.state)
+        cur_actions.append(int(exp.action))
         cur_rewards.append(exp.reward)
 
         if exp.last_state is None:
+            batch_states.extend(cur_states)
+            batch_actions.extend(cur_actions)
             batch_qvals.extend(calc_qvals(cur_rewards))
+            cur_states.clear()
+            cur_actions.clear()
             cur_rewards.clear()
             batch_episodes += 1
 
@@ -85,31 +90,29 @@ if __name__ == "__main__":
             reward = new_rewards[0]
             total_rewards.append(reward)
             mean_rewards = float(np.mean(total_rewards[-100:]))
-            print(f"{step_idx}: reward: {reward:6.2f}, mean_100: {mean_rewards:6.2f}, "
-                  f"episodes: {done_episodes}")
+            print("%d: reward: %6.2f, mean_100: %6.2f, episodes: %d" % (
+                step_idx, reward, mean_rewards, done_episodes))
             writer.add_scalar("reward", reward, step_idx)
             writer.add_scalar("reward_100", mean_rewards, step_idx)
             writer.add_scalar("episodes", done_episodes, step_idx)
-            if mean_rewards > 450:
-                print(f"Solved in {step_idx} steps and {done_episodes} episodes!")
+            if mean_rewards > 190:
+                print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
                 break
 
         if batch_episodes < EPISODES_TO_TRAIN:
             continue
 
+        states_v = torch.as_tensor(np.asarray(batch_states))
+        batch_actions_t = torch.as_tensor(batch_actions)
+        batch_qvals_v = torch.as_tensor(batch_qvals)
+
         optimizer.zero_grad()
-        states_t = torch.as_tensor(np.asarray(batch_states))
-        batch_actions_t = torch.as_tensor(np.asarray(batch_actions))
-        batch_qvals_t = torch.as_tensor(np.asarray(batch_qvals))
+        logits_v = net(states_v)
+        log_prob_v = F.log_softmax(logits_v, dim=1)
+        log_prob_actions_v = batch_qvals_v * log_prob_v[range(len(batch_states)), batch_actions_t]
+        loss_v = -log_prob_actions_v.mean()
 
-        logits_t = net(states_t)
-        log_prob_t = F.log_softmax(logits_t, dim=1)
-        batch_idx = range(len(batch_states))
-        act_probs_t = log_prob_t[batch_idx, batch_actions_t]
-        log_prob_actions_v = batch_qvals_t * act_probs_t
-        loss_t = -log_prob_actions_v.mean()
-
-        loss_t.backward()
+        loss_v.backward()
         optimizer.step()
 
         batch_episodes = 0
