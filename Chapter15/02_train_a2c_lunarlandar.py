@@ -23,11 +23,6 @@ BATCH_SIZE = 32
 LEARNING_RATE = 5e-5
 ENTROPY_BETA = 1e-4
 
-
-GAMMA = 0.99
-LEARNING_RATE = 0.001
-ENTROPY_BETA = 0.01
-BATCH_SIZE = 128
 NUM_ENVS = 100
 
 
@@ -73,11 +68,11 @@ if __name__ == "__main__":
 
     game = "LunarLander-v2"
     env_factories = [
-        lambda: gym.make(game, continuous=True)
+        lambda: gym.make(game, enable_wind=False, continuous=True)
         for _ in range(NUM_ENVS)
     ]
     env = gym.vector.SyncVectorEnv(env_factories)
-    test_env = gym.make(game, continuous=True)
+    test_env = gym.make(game, enable_wind=False, continuous=True)
 
     #net = model_LunarLander.ModelA2C(env.observation_space.shape[0], env.action_space.shape[0]).to(device)
     net = model_LunarLander.ModelA2C(env.observation_space.shape[1], env.action_space.shape[0]).to(device)
